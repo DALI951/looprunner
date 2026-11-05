@@ -12,7 +12,6 @@ interface LeafletMapProps {
   currentRunnerPos?: LatLng | null;
   savedPlaces?: SavedPlace[];
   onMapClick?: (coords: LatLng) => void;
-  interactive?: boolean;
   className?: string;
 }
 
@@ -31,6 +30,7 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const routeLayerRef = useRef<L.Polyline | null>(null);
+  const glowLayerRef = useRef<L.Polyline | null>(null);
   const breadcrumbLayerRef = useRef<L.Polyline | null>(null);
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
   const runnerMarkerRef = useRef<L.Marker | null>(null);
@@ -46,32 +46,44 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
       zoomControl: false,
     });
 
-    // Clean OpenStreetMap tiles
+    // OpenStreetMap tiles
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap contributors',
     }).addTo(map);
 
-    // Zoom controls at top right
+    // Zoom control at top right
     L.control.zoom({ position: 'topright' }).addTo(map);
 
     markersLayerRef.current = L.layerGroup().addTo(map);
     mapRef.current = map;
 
+    // Trigger size calculation
+    setTimeout(() => {
+      map.invalidateSize();
+    }, 100);
+
+    // ResizeObserver ensures map is always 100% visible even when parent resizes
+    const resizeObserver = new ResizeObserver(() => {
+      map.invalidateSize();
+    });
+    resizeObserver.observe(containerRef.current);
+
     return () => {
+      resizeObserver.disconnect();
       map.remove();
       mapRef.current = null;
     };
   }, []);
 
-  // Update center when center prop changes
+  // Invalidate size on center / view updates
   useEffect(() => {
-    if (mapRef.current && center) {
-      mapRef.current.setView([center.lat, center.lng], zoom);
-      setTimeout(() => {
-        mapRef.current?.invalidateSize();
-      }, 100);
-    }
+    const map = mapRef.current;
+    if (!map) return;
+    map.setView([center.lat, center.lng], zoom);
+    setTimeout(() => {
+      map.invalidateSize();
+    }, 80);
   }, [center.lat, center.lng, zoom]);
 
   // Click handler
@@ -104,7 +116,7 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
       const pinIcon = L.divIcon({
         className: 'custom-pin-marker',
         html: `
-          <div style="background: #3b82f6; color: white; padding: 4px 8px; border-radius: 9999px; font-size: 11px; font-weight: 600; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.4); display: flex; align-items: center; gap: 4px; border: 2px solid white; transform: translate(-50%, -100%);">
+          <div style="background: #2563eb; color: white; padding: 4px 8px; border-radius: 9999px; font-size: 11px; font-weight: 700; box-shadow: 0 4px 8px rgba(0,0,0,0.5); display: flex; align-items: center; gap: 4px; border: 2px solid white; transform: translate(-50%, -100%); white-space: nowrap;">
             <span>📍</span>
             <span>${place.name}</span>
           </div>
@@ -113,42 +125,63 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
       });
       L.marker([place.coords.lat, place.coords.lng], { icon: pinIcon })
         .addTo(markersLayer)
-        .bindPopup(`<b>${place.name}</b><br/>Saved Location`);
+        .bindPopup(`<b>${place.name}</b><br/>Saved Place`);
     });
 
-    // 2. Start Point Pin
+    const isLoop =
+      startPoint &&
+      endPoint &&
+      Math.abs(startPoint.lat - endPoint.lat) < 0.0005 &&
+      Math.abs(startPoint.lng - endPoint.lng) < 0.0005;
+
+    // 2. Start / Loop Pin
     if (startPoint) {
+      const startHtml = isLoop
+        ? `
+          <div style="background: #10b981; color: white; padding: 4px 10px; border-radius: 9999px; font-size: 11px; font-weight: 800; border: 2px solid white; box-shadow: 0 4px 10px rgba(16,185,129,0.7); display: flex; align-items: center; gap: 4px; transform: translate(-50%, -50%); white-space: nowrap;">
+            <span>🔄</span>
+            <span>START & FINISH</span>
+          </div>
+        `
+        : `
+          <div style="background: #10b981; color: white; padding: 4px 10px; border-radius: 9999px; font-size: 11px; font-weight: 800; border: 2px solid white; box-shadow: 0 4px 10px rgba(16,185,129,0.7); display: flex; align-items: center; gap: 4px; transform: translate(-50%, -50%); white-space: nowrap;">
+            <span>🏃</span>
+            <span>START</span>
+          </div>
+        `;
+
       const startIcon = L.divIcon({
         className: 'start-marker',
-        html: `
-          <div style="background: #10b981; color: white; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; border: 3px solid white; box-shadow: 0 4px 10px rgba(16,185,129,0.5); transform: translate(-50%, -50%);">
-            🏃
-          </div>
-        `,
+        html: startHtml,
         iconSize: [0, 0],
       });
-      L.marker([startPoint.lat, startPoint.lng], { icon: startIcon })
-        .addTo(markersLayer)
-        .bindPopup('<b>Start Point</b>');
+      L.marker([startPoint.lat, startPoint.lng], { icon: startIcon, zIndexOffset: 500 }).addTo(
+        markersLayer
+      );
     }
 
-    // 3. End Point Pin (if different from start)
-    if (endPoint && (!startPoint || Math.abs(endPoint.lat - startPoint.lat) > 0.0001 || Math.abs(endPoint.lng - startPoint.lng) > 0.0001)) {
+    // 3. Distinct Finish Pin (only when not a loop)
+    if (endPoint && !isLoop) {
       const endIcon = L.divIcon({
         className: 'end-marker',
         html: `
-          <div style="background: #ef4444; color: white; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; border: 3px solid white; box-shadow: 0 4px 10px rgba(239,68,68,0.5); transform: translate(-50%, -50%);">
-            🏁
+          <div style="background: #ef4444; color: white; padding: 4px 10px; border-radius: 9999px; font-size: 11px; font-weight: 800; border: 2px solid white; box-shadow: 0 4px 10px rgba(239,68,68,0.7); display: flex; align-items: center; gap: 4px; transform: translate(-50%, -50%); white-space: nowrap;">
+            <span>🏁</span>
+            <span>FINISH</span>
           </div>
         `,
         iconSize: [0, 0],
       });
-      L.marker([endPoint.lat, endPoint.lng], { icon: endIcon })
-        .addTo(markersLayer)
-        .bindPopup('<b>Finish Point</b>');
+      L.marker([endPoint.lat, endPoint.lng], { icon: endIcon, zIndexOffset: 500 }).addTo(
+        markersLayer
+      );
     }
 
     // 4. Planned Route Polyline
+    if (glowLayerRef.current) {
+      glowLayerRef.current.remove();
+      glowLayerRef.current = null;
+    }
     if (routeLayerRef.current) {
       routeLayerRef.current.remove();
       routeLayerRef.current = null;
@@ -156,33 +189,43 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
 
     if (routeCoordinates && routeCoordinates.length > 0) {
       // Glow underlayer
-      const glowLine = L.polyline(routeCoordinates, {
+      const glow = L.polyline(routeCoordinates, {
         color: '#0284c7',
-        weight: 9,
-        opacity: 0.35,
+        weight: 10,
+        opacity: 0.5,
         lineCap: 'round',
         lineJoin: 'round',
       }).addTo(markersLayer);
+      glowLayerRef.current = glow;
 
-      // Main route polyline
-      const routeLine = L.polyline(routeCoordinates, {
-        color: '#38bdf8',
+      // Primary vibrant neon route line
+      const line = L.polyline(routeCoordinates, {
+        color: '#00f0ff',
         weight: 5,
-        opacity: 0.95,
+        opacity: 1,
         lineCap: 'round',
         lineJoin: 'round',
       }).addTo(markersLayer);
+      routeLayerRef.current = line;
 
-      routeLayerRef.current = routeLine;
-
-      // Fit bounds nicely around the route
-      const bounds = routeLine.getBounds();
-      if (bounds.isValid()) {
-        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 16 });
-      }
+      // Fit bounds smoothly with padding
+      setTimeout(() => {
+        try {
+          const bounds = line.getBounds();
+          if (bounds.isValid()) {
+            map.fitBounds(bounds, {
+              padding: [40, 40],
+              maxZoom: 16,
+              animate: true,
+            });
+          }
+        } catch {
+          // ignore if container sizing in transition
+        }
+      }, 50);
     }
 
-    // 5. Actual GPS Trail (Orange)
+    // 5. Recorded Actual Runner GPS Path (Amber)
     if (breadcrumbLayerRef.current) {
       breadcrumbLayerRef.current.remove();
       breadcrumbLayerRef.current = null;
@@ -192,8 +235,8 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
       const trail = L.polyline(actualBreadcrumbs, {
         color: '#f59e0b',
         weight: 6,
-        opacity: 0.9,
-        dashArray: '1, 8',
+        opacity: 0.95,
+        dashArray: '2, 6',
       }).addTo(markersLayer);
       breadcrumbLayerRef.current = trail;
     }
@@ -230,8 +273,8 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
   }, [currentRunnerPos]);
 
   return (
-    <div className={`relative overflow-hidden rounded-2xl border border-slate-700/60 shadow-xl ${className}`}>
-      <div ref={containerRef} className="w-full h-full" />
+    <div className={`relative w-full h-full overflow-hidden ${className}`}>
+      <div ref={containerRef} className="w-full h-full min-h-[280px]" />
     </div>
   );
 };

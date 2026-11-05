@@ -6,7 +6,7 @@ const SETTINGS_KEY = 'looprunner_settings';
 
 const DEFAULT_SETTINGS: AppSettings = {
   weightKg: 70,
-  githubRepo: '',
+  githubRepo: 'DALI951/looprunner',
   unitSystem: 'metric',
   simulatedGpsSpeedKmh: 10,
 };
