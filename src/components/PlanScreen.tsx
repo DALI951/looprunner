@@ -9,9 +9,10 @@ import {
   Play,
   RotateCw,
   AlertCircle,
-  Clock,
   ChevronDown,
   ChevronUp,
+  Shield,
+  CircleDot,
 } from 'lucide-react';
 
 interface PlanScreenProps {
@@ -30,6 +31,11 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
   // Target distance state in km
   const [targetKm, setTargetKm] = useState<number>(5.0);
   const [isLoop, setIsLoop] = useState<boolean>(true);
+
+  // New features: Avoid highways & Zone limit
+  const [avoidHighways, setAvoidHighways] = useState<boolean>(false);
+  const [hasZoneLimit, setHasZoneLimit] = useState<boolean>(false);
+  const [maxZoneKm, setMaxZoneKm] = useState<number>(1.5);
 
   // Active generated route (null before generating)
   const [activeRoute, setActiveRoute] = useState<RouteOption | null>(null);
@@ -121,9 +127,14 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
           ? feasibility.minDistanceKm
           : targetKm;
 
-      const route = await generateCustomRoute(start, end, effectiveTargetKm, angle);
+      const route = await generateCustomRoute(start, end, effectiveTargetKm, {
+        avoidHighways,
+        maxRadiusZoneKm: hasZoneLimit ? maxZoneKm : null,
+        angleVariation: angle,
+      });
+
       setActiveRoute(route);
-      setIsConfigExpanded(false); // Collapse planner card to give hero focus to the map
+      setIsConfigExpanded(false); // Focus on the hero map
     } catch (err) {
       console.error('Error generating route:', err);
     } finally {
@@ -132,7 +143,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
   };
 
   const handleRegenerateAnother = async () => {
-    const nextAngle = rotationAngle + 1.1; // Rotate ~65 degrees for alternative streets
+    const nextAngle = rotationAngle + 1.1; // Rotate ~65 degrees
     setRotationAngle(nextAngle);
     await handleGenerate(nextAngle);
   };
@@ -160,7 +171,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
             Route Planner
           </h1>
           <p className="text-[10px] text-slate-400">
-            {activeRoute ? 'Route mapped below' : 'Set distance • Snap to road circuit'}
+            {activeRoute ? 'Route mapped below' : 'Set distance • Road circuit generator'}
           </p>
         </div>
 
@@ -173,7 +184,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
         </button>
       </div>
 
-      {/* Main Hero Leaflet Map (Fills all available space) */}
+      {/* Main Hero Leaflet Map */}
       <div className="relative flex-1 w-full min-h-[220px]">
         <LeafletMap
           center={startCoords}
@@ -182,6 +193,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
           endPoint={isLoop ? null : endCoords}
           routeCoordinates={activeRoute ? activeRoute.coordinates : []}
           savedPlaces={savedPlaces}
+          zoneRadiusKm={hasZoneLimit ? maxZoneKm : null}
           onMapClick={handleMapClick}
           className="w-full h-full"
         />
@@ -193,7 +205,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
           </div>
         )}
 
-        {/* Floating Route Badge when route is drawn on the map */}
+        {/* Floating Route Badge when route is drawn */}
         {activeRoute && !pickingTarget && (
           <div className="absolute top-3 left-3 right-3 z-[400] flex items-center justify-between pointer-events-none">
             <div className="bg-slate-900/95 backdrop-blur border border-sky-500/60 rounded-xl px-3 py-1.5 shadow-xl flex items-center gap-2 pointer-events-auto">
@@ -250,7 +262,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
                 value={targetKm}
                 onChange={e => {
                   setTargetKm(parseFloat(e.target.value));
-                  setActiveRoute(null); // Reset route so user clicks generate
+                  setActiveRoute(null);
                 }}
                 className="w-full accent-sky-400 h-2 bg-slate-800 rounded-lg cursor-pointer"
               />
@@ -274,6 +286,85 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
                     {km} km
                   </button>
                 ))}
+              </div>
+            </div>
+
+            {/* Neighborhood Zigzag & Zone Boundary Toggles */}
+            <div className="bg-slate-950/70 rounded-2xl p-3 border border-slate-800 space-y-2.5">
+              {/* Avoid Highways / Busy Roads Toggle */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                    <Shield className="w-3.5 h-3.5" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-slate-200">Avoid Busy Streets / Highways</p>
+                    <p className="text-[10px] text-slate-400">Zigzag quietly between homes & local paths</p>
+                  </div>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={avoidHighways}
+                    onChange={e => {
+                      setAvoidHighways(e.target.checked);
+                      setActiveRoute(null);
+                    }}
+                    className="sr-only peer"
+                  />
+                  <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500"></div>
+                </label>
+              </div>
+
+              {/* Max Zone Distance Limit Toggle */}
+              <div className="pt-2 border-t border-slate-800/80">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="p-1.5 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                      <CircleDot className="w-3.5 h-3.5" />
+                    </div>
+                    <div>
+                      <p className="text-xs font-bold text-slate-200">Limit Distance From Start</p>
+                      <p className="text-[10px] text-slate-400">Stay within a defined radius bubble</p>
+                    </div>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={hasZoneLimit}
+                      onChange={e => {
+                        setHasZoneLimit(e.target.checked);
+                        setActiveRoute(null);
+                      }}
+                      className="sr-only peer"
+                    />
+                    <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
+                  </label>
+                </div>
+
+                {hasZoneLimit && (
+                  <div className="mt-2.5 pt-2 bg-slate-900 p-2.5 rounded-xl border border-slate-800 animate-fadeIn">
+                    <div className="flex items-center justify-between text-xs mb-1">
+                      <span className="text-slate-400 text-[11px]">Maximum Radius from Start:</span>
+                      <span className="font-bold text-amber-400 font-mono">{maxZoneKm.toFixed(1)} km</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="5.0"
+                      step="0.2"
+                      value={maxZoneKm}
+                      onChange={e => {
+                        setMaxZoneKm(parseFloat(e.target.value));
+                        setActiveRoute(null);
+                      }}
+                      className="w-full accent-amber-400 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
+                    />
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      Dashed amber zone shown on map. Loops will snake within this boundary.
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -411,9 +502,18 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
               <span className="font-semibold text-sky-400">
                 ✓ Route drawn on map above
               </span>
-              <span className="text-[11px] bg-sky-950 text-sky-300 px-2 py-0.5 rounded border border-sky-800 font-mono">
-                Zero Backtracking
-              </span>
+              <div className="flex gap-1.5">
+                {avoidHighways && (
+                  <span className="text-[10px] bg-emerald-950 text-emerald-300 px-2 py-0.5 rounded border border-emerald-800 font-mono">
+                    Quiet Paths
+                  </span>
+                )}
+                {hasZoneLimit && (
+                  <span className="text-[10px] bg-amber-950 text-amber-300 px-2 py-0.5 rounded border border-amber-800 font-mono">
+                    ≤{maxZoneKm}km Bubble
+                  </span>
+                )}
+              </div>
             </div>
 
             <div className="flex gap-2.5">

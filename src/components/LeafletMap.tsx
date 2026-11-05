@@ -1,6 +1,7 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import { LatLng, SavedPlace } from '../types';
+import { Crosshair } from 'lucide-react';
 
 interface LeafletMapProps {
   center: LatLng;
@@ -11,6 +12,9 @@ interface LeafletMapProps {
   actualBreadcrumbs?: [number, number][]; // Recorded runner path
   currentRunnerPos?: LatLng | null;
   savedPlaces?: SavedPlace[];
+  zoneRadiusKm?: number | null; // Zone limit circle from start
+  autoFollowRunner?: boolean; // Follow user camera
+  speedKmh?: number | null; // Live speed overlay
   onMapClick?: (coords: LatLng) => void;
   className?: string;
 }
@@ -24,6 +28,9 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
   actualBreadcrumbs = [],
   currentRunnerPos,
   savedPlaces = [],
+  zoneRadiusKm,
+  autoFollowRunner = false,
+  speedKmh,
   onMapClick,
   className = 'w-full h-full min-h-[300px]',
 }) => {
@@ -34,6 +41,14 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
   const breadcrumbLayerRef = useRef<L.Polyline | null>(null);
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
   const runnerMarkerRef = useRef<L.Marker | null>(null);
+  const zoneCircleRef = useRef<L.Circle | null>(null);
+
+  const [isFollowing, setIsFollowing] = useState<boolean>(autoFollowRunner);
+
+  // Sync isFollowing if prop changes
+  useEffect(() => {
+    setIsFollowing(autoFollowRunner);
+  }, [autoFollowRunner]);
 
   // Initialize Map
   useEffect(() => {
@@ -58,12 +73,17 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
     markersLayerRef.current = L.layerGroup().addTo(map);
     mapRef.current = map;
 
-    // Trigger size calculation
+    // Detect user manual dragging to temporarily pause auto-follow
+    map.on('dragstart', () => {
+      if (currentRunnerPos) {
+        setIsFollowing(false);
+      }
+    });
+
     setTimeout(() => {
       map.invalidateSize();
     }, 100);
 
-    // ResizeObserver ensures map is always 100% visible even when parent resizes
     const resizeObserver = new ResizeObserver(() => {
       map.invalidateSize();
     });
@@ -76,15 +96,17 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
     };
   }, []);
 
-  // Invalidate size on center / view updates
+  // Invalidate size on center / view updates (if not in active run follow mode)
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    map.setView([center.lat, center.lng], zoom);
-    setTimeout(() => {
-      map.invalidateSize();
-    }, 80);
-  }, [center.lat, center.lng, zoom]);
+    if (!currentRunnerPos) {
+      map.setView([center.lat, center.lng], zoom);
+      setTimeout(() => {
+        map.invalidateSize();
+      }, 80);
+    }
+  }, [center.lat, center.lng, zoom, currentRunnerPos]);
 
   // Click handler
   useEffect(() => {
@@ -111,7 +133,25 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
 
     markersLayer.clearLayers();
 
-    // 1. Saved Places Pins
+    // 1. Zone Boundary Circle (Max Distance from Start)
+    if (zoneCircleRef.current) {
+      zoneCircleRef.current.remove();
+      zoneCircleRef.current = null;
+    }
+    if (startPoint && zoneRadiusKm && zoneRadiusKm > 0.2) {
+      const circle = L.circle([startPoint.lat, startPoint.lng], {
+        radius: zoneRadiusKm * 1000,
+        color: '#f59e0b',
+        weight: 2,
+        opacity: 0.8,
+        dashArray: '8, 8',
+        fillColor: '#f59e0b',
+        fillOpacity: 0.05,
+      }).addTo(markersLayer);
+      zoneCircleRef.current = circle;
+    }
+
+    // 2. Saved Places Pins
     savedPlaces.forEach(place => {
       const pinIcon = L.divIcon({
         className: 'custom-pin-marker',
@@ -134,7 +174,7 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
       Math.abs(startPoint.lat - endPoint.lat) < 0.0005 &&
       Math.abs(startPoint.lng - endPoint.lng) < 0.0005;
 
-    // 2. Start / Loop Pin
+    // 3. Start / Loop Pin
     if (startPoint) {
       const startHtml = isLoop
         ? `
@@ -160,7 +200,7 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
       );
     }
 
-    // 3. Distinct Finish Pin (only when not a loop)
+    // 4. Distinct Finish Pin
     if (endPoint && !isLoop) {
       const endIcon = L.divIcon({
         className: 'end-marker',
@@ -177,7 +217,7 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
       );
     }
 
-    // 4. Planned Route Polyline
+    // 5. Planned Route Polyline
     if (glowLayerRef.current) {
       glowLayerRef.current.remove();
       glowLayerRef.current = null;
@@ -208,24 +248,26 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
       }).addTo(markersLayer);
       routeLayerRef.current = line;
 
-      // Fit bounds smoothly with padding
-      setTimeout(() => {
-        try {
-          const bounds = line.getBounds();
-          if (bounds.isValid()) {
-            map.fitBounds(bounds, {
-              padding: [40, 40],
-              maxZoom: 16,
-              animate: true,
-            });
+      // Fit bounds if not actively tracking a runner position
+      if (!currentRunnerPos) {
+        setTimeout(() => {
+          try {
+            const bounds = line.getBounds();
+            if (bounds.isValid()) {
+              map.fitBounds(bounds, {
+                padding: [45, 45],
+                maxZoom: 16,
+                animate: true,
+              });
+            }
+          } catch {
+            // ignore
           }
-        } catch {
-          // ignore if container sizing in transition
-        }
-      }, 50);
+        }, 50);
+      }
     }
 
-    // 5. Recorded Actual Runner GPS Path (Amber)
+    // 6. Recorded GPS Path (Amber)
     if (breadcrumbLayerRef.current) {
       breadcrumbLayerRef.current.remove();
       breadcrumbLayerRef.current = null;
@@ -240,9 +282,9 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
       }).addTo(markersLayer);
       breadcrumbLayerRef.current = trail;
     }
-  }, [startPoint, endPoint, routeCoordinates, actualBreadcrumbs, savedPlaces]);
+  }, [startPoint, endPoint, routeCoordinates, actualBreadcrumbs, savedPlaces, zoneRadiusKm]);
 
-  // Live Runner Pulse Marker
+  // Live Runner Pulse Marker & Camera Follow
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -266,15 +308,61 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
       } else {
         runnerMarkerRef.current.setLatLng([currentRunnerPos.lat, currentRunnerPos.lng]);
       }
+
+      // Smooth camera pan to follow the runner
+      if (isFollowing) {
+        map.panTo([currentRunnerPos.lat, currentRunnerPos.lng], {
+          animate: true,
+          duration: 0.6,
+        });
+      }
     } else if (runnerMarkerRef.current) {
       runnerMarkerRef.current.remove();
       runnerMarkerRef.current = null;
     }
-  }, [currentRunnerPos]);
+  }, [currentRunnerPos, isFollowing]);
+
+  const handleRecenter = () => {
+    setIsFollowing(true);
+    if (mapRef.current && currentRunnerPos) {
+      mapRef.current.setView([currentRunnerPos.lat, currentRunnerPos.lng], 16, { animate: true });
+    }
+  };
 
   return (
     <div className={`relative w-full h-full overflow-hidden ${className}`}>
       <div ref={containerRef} className="w-full h-full min-h-[280px]" />
+
+      {/* Floating Speed & Camera Follow Overlays during active run */}
+      {currentRunnerPos && (
+        <div className="absolute top-3 left-3 z-[400] flex items-center gap-2 pointer-events-none">
+          {speedKmh !== undefined && speedKmh !== null && (
+            <div className="bg-slate-900/95 backdrop-blur border border-sky-500/80 rounded-2xl px-3 py-1.5 shadow-2xl flex items-center gap-2 pointer-events-auto">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+              <div>
+                <p className="text-[9px] uppercase font-bold text-slate-400 leading-none">Speed</p>
+                <p className="text-sm font-black text-white font-mono leading-tight">
+                  {speedKmh.toFixed(1)} <span className="text-[10px] text-sky-400 font-sans">km/h</span>
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Recenter / Auto-Follow Toggle Button */}
+          <button
+            onClick={handleRecenter}
+            className={`p-2.5 rounded-2xl border shadow-xl transition pointer-events-auto flex items-center gap-1.5 text-xs font-bold ${
+              isFollowing
+                ? 'bg-sky-600 border-sky-400 text-white shadow-sky-500/30'
+                : 'bg-slate-900/90 border-slate-700 text-slate-300 hover:text-white'
+            }`}
+            title="Recenter and follow me"
+          >
+            <Crosshair className={`w-4 h-4 ${isFollowing ? 'animate-spin' : ''}`} />
+            <span>{isFollowing ? 'Tracking Me' : 'Follow Me'}</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 };

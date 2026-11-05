@@ -43,7 +43,7 @@ export const PreviewScreen: React.FC<PreviewScreenProps> = ({
         startCoords,
         endCoords,
         route.distanceKm,
-        newAngle
+        { angleVariation: newAngle, avoidHighways: route.avoidHighways, maxRadiusZoneKm: route.maxRadiusZoneKm }
       );
       setRoute(newRoute);
     } catch (err) {

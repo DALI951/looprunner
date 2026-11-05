@@ -51,10 +51,9 @@ export async function checkFeasibility(
     return { isFeasible: true, minDistanceKm: 0.5 };
   }
 
-  // Estimated pedestrian shortest path usually requires ~1.2x straight line due to road grids
+  // Estimated pedestrian shortest path
   let estimatedMinRoad = straightLine * 1.15;
 
-  // Attempt real OSRM shortest path calculation
   try {
     const url = `https://router.project-osrm.org/route/v1/foot/${start.lng},${start.lat};${end.lng},${end.lat}?overview=false`;
     const res = await fetch(url, { signal: AbortSignal.timeout(3500) });
@@ -68,7 +67,6 @@ export async function checkFeasibility(
     // fallback to conservative geometric estimate
   }
 
-  // Round up to 1 decimal place
   const roundedMin = Math.ceil(estimatedMinRoad * 10) / 10;
 
   if (targetKm < estimatedMinRoad * 0.95) {
@@ -85,31 +83,58 @@ export async function checkFeasibility(
   };
 }
 
+export interface RouteGeneratorOptions {
+  avoidHighways?: boolean;
+  maxRadiusZoneKm?: number | null;
+  angleVariation?: number;
+}
+
 /**
  * Generates intermediate waypoints around origin in a polygon sweep to create a circular loop
- * avoiding doubling back on the same street.
+ * avoiding doubling back on the same street, with support for zone radius clamping and neighborhood zigzags.
  */
 function generateLoopWaypoints(
   start: LatLng,
   targetKm: number,
-  angleOffsetRad: number = 0
+  options: RouteGeneratorOptions = {}
 ): LatLng[] {
-  // Approximate radius needed for perimeter of circle: P = 2 * PI * R
-  // Walking path winding factor is ~1.25, so:
-  const radiusKm = (targetKm / (2 * Math.PI)) * 0.85;
+  const { avoidHighways = false, maxRadiusZoneKm = null, angleVariation = 0 } = options;
 
-  // We place 3 or 4 directional waypoints around the circle
-  const numWaypoints = targetKm > 8 ? 4 : 3;
+  // Theoretical circle radius: P = 2 * PI * R
+  let radiusKm = (targetKm / (2 * Math.PI)) * 0.85;
+
+  // If user specified a maximum boundary zone from start, clamp radius
+  if (maxRadiusZoneKm && maxRadiusZoneKm > 0.2) {
+    radiusKm = Math.min(radiusKm, maxRadiusZoneKm * 0.9);
+  }
+
+  // If avoiding highways or densely packed in a zone, add more waypoints for zigzags
+  const numWaypoints = avoidHighways || (maxRadiusZoneKm && targetKm > maxRadiusZoneKm * 3)
+    ? Math.max(5, Math.min(8, Math.round(targetKm * 1.4)))
+    : targetKm > 8 ? 4 : 3;
+
   const waypoints: LatLng[] = [];
 
   for (let i = 1; i <= numWaypoints; i++) {
-    // Angular progression ensuring sequential non-crossing loop
-    const angle = angleOffsetRad + (i * (2 * Math.PI)) / (numWaypoints + 1);
+    // Angular progression
+    const baseAngle = angleVariation + (i * (2 * Math.PI)) / (numWaypoints + 1);
 
-    // Apply latitude-adjusted degree conversion
-    const latOffset = (radiusKm * Math.cos(angle)) / 111.0;
+    // If avoidHighways is true, add residential zigzag oscillation
+    let effectiveRadius = radiusKm;
+    if (avoidHighways) {
+      // Alternate radius by +/- 22% to force routing through inner neighborhood streets
+      const wiggle = (i % 2 === 0 ? 0.78 : 1.15);
+      effectiveRadius = radiusKm * wiggle;
+    }
+
+    // Ensure within max radius zone
+    if (maxRadiusZoneKm && maxRadiusZoneKm > 0.2) {
+      effectiveRadius = Math.min(effectiveRadius, maxRadiusZoneKm * 0.95);
+    }
+
+    const latOffset = (effectiveRadius * Math.cos(baseAngle)) / 111.0;
     const lngOffset =
-      (radiusKm * Math.sin(angle)) / (111.0 * Math.cos((start.lat * Math.PI) / 180));
+      (effectiveRadius * Math.sin(baseAngle)) / (111.0 * Math.cos((start.lat * Math.PI) / 180));
 
     waypoints.push({
       lat: start.lat + latOffset,
@@ -121,14 +146,15 @@ function generateLoopWaypoints(
 }
 
 /**
- * Generates detour waypoints for Point A to Point B when targetKm > shortest path
+ * Generates detour waypoints for Point A to Point B
  */
 function generatePointToPointDetourWaypoints(
   start: LatLng,
   end: LatLng,
   targetKm: number,
-  flipSide: boolean = false
+  options: RouteGeneratorOptions = {}
 ): LatLng[] {
+  const { avoidHighways = false, angleVariation = 0 } = options;
   const directDistance = calculateDistanceKm(start, end);
   const extraDistance = Math.max(0, targetKm - directDistance);
 
@@ -143,11 +169,11 @@ function generatePointToPointDetourWaypoints(
   const dLng = end.lng - start.lng;
   const mag = Math.sqrt(dLat * dLat + dLng * dLng) || 0.0001;
 
-  // Perpendicular unit vector
   let normLat = -dLng / mag;
   let normLng = dLat / mag;
 
-  if (flipSide) {
+  const flip = Math.sin(angleVariation) > 0;
+  if (flip) {
     normLat = -normLat;
     normLng = -normLng;
   }
@@ -156,9 +182,11 @@ function generatePointToPointDetourWaypoints(
   const lngOffset =
     (deflectionKm * normLng) / (111.0 * Math.cos((midLat * Math.PI) / 180));
 
+  const zigzagFactor = avoidHighways ? 0.6 : 1.0;
+
   const waypoint1: LatLng = {
-    lat: (start.lat + midLat) / 2 + latOffset * 0.7,
-    lng: (start.lng + midLng) / 2 + lngOffset * 0.7,
+    lat: (start.lat + midLat) / 2 + latOffset * 0.7 * zigzagFactor,
+    lng: (start.lng + midLng) / 2 + lngOffset * 0.7 * zigzagFactor,
   };
 
   const waypoint2: LatLng = {
@@ -167,8 +195,8 @@ function generatePointToPointDetourWaypoints(
   };
 
   const waypoint3: LatLng = {
-    lat: (midLat + end.lat) / 2 + latOffset * 0.7,
-    lng: (midLng + end.lng) / 2 + lngOffset * 0.7,
+    lat: (midLat + end.lat) / 2 + latOffset * 0.7 * (avoidHighways ? 1.2 : 1.0),
+    lng: (midLng + end.lng) / 2 + lngOffset * 0.7 * (avoidHighways ? 1.2 : 1.0),
   };
 
   return [waypoint1, waypoint2, waypoint3];
@@ -181,21 +209,18 @@ export async function generateCustomRoute(
   start: LatLng,
   end: LatLng,
   targetKm: number,
-  angleVariation: number = 0
+  options: RouteGeneratorOptions = {}
 ): Promise<RouteOption> {
   const isLoop = calculateDistanceKm(start, end) < 0.05;
   let waypoints: LatLng[] = [];
 
   if (isLoop) {
-    // Generate radial perimeter waypoints
-    waypoints = generateLoopWaypoints(start, targetKm, angleVariation);
+    waypoints = generateLoopWaypoints(start, targetKm, options);
   } else {
-    // Generate lateral detour waypoints
-    const flip = Math.sin(angleVariation) > 0;
-    waypoints = generatePointToPointDetourWaypoints(start, end, targetKm, flip);
+    waypoints = generatePointToPointDetourWaypoints(start, end, targetKm, options);
   }
 
-  // Construct complete ordered list of points: [start, ...waypoints, end]
+  // Ordered stops: [start, ...waypoints, end]
   const allStops = [start, ...waypoints, end];
 
   // Try to route via OSRM Foot API
@@ -209,12 +234,10 @@ export async function generateCustomRoute(
       if (data.routes && data.routes.length > 0) {
         const route = data.routes[0];
         const actualDistanceKm = route.distance / 1000;
-        // GeoJSON coordinates are [lng, lat], convert to Leaflet [lat, lng]
         const latLngCoords: [number, number][] = route.geometry.coordinates.map(
           (c: [number, number]) => [c[1], c[0]]
         );
 
-        // Average running pace ~ 5.5 min/km
         const estimatedMinutes = Math.round(actualDistanceKm * 5.5);
 
         return {
@@ -224,20 +247,22 @@ export async function generateCustomRoute(
           estimatedMinutes,
           waypoints,
           isLoop,
-          angleOffset: angleVariation,
+          angleOffset: options.angleVariation || 0,
+          avoidHighways: options.avoidHighways || false,
+          maxRadiusZoneKm: options.maxRadiusZoneKm || null,
         };
       }
     }
   } catch (err) {
-    console.warn('OSRM network routing fallback engaged:', err);
+    console.warn('OSRM routing network fallback:', err);
   }
 
-  // Fallback: Smooth interpolated geometric curve when offline
+  // Fallback: Smooth interpolated geometric road curve
   const fallbackCoords: [number, number][] = [];
   for (let i = 0; i < allStops.length - 1; i++) {
     const p1 = allStops[i];
     const p2 = allStops[i + 1];
-    const steps = 12;
+    const steps = 14;
     for (let s = 0; s < steps; s++) {
       const t = s / steps;
       fallbackCoords.push([
@@ -263,6 +288,47 @@ export async function generateCustomRoute(
     estimatedMinutes: Math.round(targetKm * 5.5),
     waypoints,
     isLoop,
-    angleOffset: angleVariation,
+    angleOffset: options.angleVariation || 0,
+    avoidHighways: options.avoidHighways || false,
+    maxRadiusZoneKm: options.maxRadiusZoneKm || null,
   };
+}
+
+/**
+ * Calculates perpendicular/shortest distance in meters from current position to route polyline
+ */
+export function getDistanceFromPolylineMeters(pos: LatLng, polyline: [number, number][]): number {
+  if (!polyline || polyline.length === 0) return 0;
+  let minDistanceKm = Infinity;
+
+  // Sample every few points for performance
+  const step = polyline.length > 200 ? 2 : 1;
+  for (let i = 0; i < polyline.length; i += step) {
+    const pt = { lat: polyline[i][0], lng: polyline[i][1] };
+    const dist = calculateDistanceKm(pos, pt);
+    if (dist < minDistanceKm) {
+      minDistanceKm = dist;
+    }
+  }
+
+  return minDistanceKm * 1000; // in meters
+}
+
+/**
+ * Dynamic Recalculation (Google Maps Style):
+ * When user takes a wrong turn off-route, calculate a new route from current position to destination
+ */
+export async function recalculateRouteFromCurrent(
+  currentPos: LatLng,
+  destination: LatLng,
+  originalRoute: RouteOption
+): Promise<RouteOption> {
+  const directRemaining = calculateDistanceKm(currentPos, destination);
+  const targetKm = Math.max(directRemaining * 1.15, originalRoute.distanceKm * 0.4);
+
+  return generateCustomRoute(currentPos, destination, targetKm, {
+    avoidHighways: originalRoute.avoidHighways,
+    maxRadiusZoneKm: originalRoute.maxRadiusZoneKm,
+    angleVariation: (originalRoute.angleOffset || 0) + 0.3,
+  });
 }

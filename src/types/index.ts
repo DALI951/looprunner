@@ -20,6 +20,8 @@ export interface RouteOption {
   elevationGain?: number;
   isLoop: boolean;
   angleOffset?: number;
+  avoidHighways?: boolean;
+  maxRadiusZoneKm?: number | null;
 }
 
 export interface RunSession {
