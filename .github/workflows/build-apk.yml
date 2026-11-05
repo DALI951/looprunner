@@ -37,8 +37,8 @@ jobs:
           distribution: 'zulu'
           java-version: '21'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Build Android APK
         run: |
@@ -63,16 +63,17 @@ jobs:
             
             - **Commit**: ${{ github.sha }}
             - **Build**: #${{ github.run_number }}
-            - **Includes**:
-              - Leaflet OpenStreetMap local-first routing
-              - Target distance & loop generator (anti-backtrack)
+            - **Features**:
+              - Leaflet OpenStreetMap hero map view
+              - Real-time visible route polyline (zero backtracking)
+              - Loop generator & target distance matching
               - Saved places manager
-              - Live stats HUD (distance, duration, pace, max speed, calories)
-              - History & progress charts
+              - Live stats HUD (duration, distance, pace, max speed, calories)
+              - Personal records & progress improvement charts
               - In-app update checker
               
-            ### Download:
-            Download and install **`LoopRunner-v${{ github.run_number }}.apk`** directly on your Android device.
+            ### Download APK:
+            Download and install **`LoopRunner-latest.apk`** directly on your Android phone.
           files: |
             release-artifacts/LoopRunner-v${{ github.run_number }}.apk
             release-artifacts/LoopRunner-latest.apk
