@@ -49,8 +49,7 @@ jobs:
       - name: Prepare APK Asset
         run: |
           mkdir -p release-artifacts
-          cp android/app/build/outputs/apk/debug/app-debug.apk release-artifacts/LoopRunner-v${{ github.run_number }}.apk
-          cp android/app/build/outputs/apk/debug/app-debug.apk release-artifacts/LoopRunner-latest.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk release-artifacts/LoopRunner.apk
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -73,10 +72,8 @@ jobs:
               - In-app update checker
               
             ### Download APK:
-            Download and install **`LoopRunner-latest.apk`** directly on your Android phone.
-          files: |
-            release-artifacts/LoopRunner-v${{ github.run_number }}.apk
-            release-artifacts/LoopRunner-latest.apk
+            Download and install **`LoopRunner.apk`** directly on your Android phone.
+          files: release-artifacts/LoopRunner.apk
           draft: false
           prerelease: false
         env:

@@ -7,7 +7,8 @@ import { SummaryScreen } from './components/SummaryScreen';
 import { HistoryScreen } from './components/HistoryScreen';
 import { SavedPlacesScreen } from './components/SavedPlacesScreen';
 import { UpdateModal } from './components/UpdateModal';
-import { Compass, TrendingUp, Bookmark, Smartphone, Monitor, Download } from 'lucide-react';
+import { Compass, TrendingUp, Bookmark } from 'lucide-react';
+import { Capacitor } from '@capacitor/core';
 
 type Screen = 'plan' | 'run' | 'summary' | 'history' | 'places';
 
@@ -26,8 +27,8 @@ export function App() {
   // Update modal state
   const [isUpdateOpen, setIsUpdateOpen] = useState<boolean>(false);
 
-  // PC preview mobile frame toggle
-  const [isPhoneFrame, setIsPhoneFrame] = useState<boolean>(true);
+  // Detect whether running in native APK / mobile environment
+  const isNative = Capacitor.isNativePlatform();
 
   // Load local data on mount
   useEffect(() => {
@@ -44,7 +45,6 @@ export function App() {
           });
         },
         () => {
-          // Default fallback (Tunis coords)
           setUserCoords({ lat: 36.8065, lng: 10.1815 });
         },
         { timeout: 4000 }
@@ -171,55 +171,12 @@ export function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center relative font-sans text-slate-100">
-      {/* Top PC Web Toolbar */}
-      <header className="w-full bg-slate-900/90 border-b border-slate-800 px-4 py-2 flex items-center justify-between text-xs z-50">
-        <div className="flex items-center gap-2">
-          <span className="w-2.5 h-2.5 rounded-full bg-sky-400"></span>
-          <span className="font-extrabold tracking-tight text-white text-sm">
-            LoopRunner
-          </span>
-          <span className="hidden sm:inline bg-sky-950 text-sky-400 font-mono text-[10px] px-2 py-0.5 rounded border border-sky-800">
-            OpenStreetMap • Free Routing
-          </span>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setIsUpdateOpen(true)}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-sky-950 hover:bg-sky-900 text-sky-300 text-xs font-bold border border-sky-800 transition"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>APK Updates</span>
-          </button>
-
-          <button
-            onClick={() => setIsPhoneFrame(!isPhoneFrame)}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold border border-slate-700 transition"
-          >
-            {isPhoneFrame ? (
-              <>
-                <Monitor className="w-3.5 h-3.5 text-sky-400" />
-                <span className="hidden sm:inline">Full Screen</span>
-              </>
-            ) : (
-              <>
-                <Smartphone className="w-3.5 h-3.5 text-emerald-400" />
-                <span className="hidden sm:inline">Phone View</span>
-              </>
-            )}
-          </button>
-        </div>
-      </header>
-
-      {/* Main Container */}
-      <main
-        className={`w-full flex-1 flex flex-col transition-all duration-300 ${
-          isPhoneFrame
-            ? 'max-w-[430px] my-3 h-[850px] max-h-[92vh] rounded-[38px] border-[8px] border-slate-800 shadow-2xl shadow-sky-950/40 overflow-hidden relative'
-            : 'max-w-4xl h-full'
-        }`}
-      >
+    <div className="w-full h-full min-h-screen bg-slate-950 flex flex-col font-sans text-slate-100 overflow-hidden">
+      {/* 
+        Native App Layout: 
+        No PC toolbar, no fake phone borders, fills 100% of the screen natively 
+      */}
+      <main className="w-full flex-1 flex flex-col h-full overflow-hidden">
         {/* Dynamic Screen */}
         <div className="flex-1 overflow-hidden flex flex-col">
           {renderScreen()}
@@ -227,7 +184,7 @@ export function App() {
 
         {/* Bottom Nav Bar (Hidden during active run & summary for zero distraction) */}
         {currentScreen !== 'run' && currentScreen !== 'summary' && (
-          <nav className="bg-slate-900 border-t border-slate-800 px-6 py-2.5 flex items-center justify-around z-40">
+          <nav className="bg-slate-900 border-t border-slate-800 px-6 py-2.5 flex items-center justify-around z-40 select-none pb-safe">
             <button
               onClick={() => setCurrentScreen('plan')}
               className={`flex flex-col items-center gap-1 transition ${

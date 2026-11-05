@@ -14,7 +14,8 @@ import {
   recalculateRouteFromCurrent,
 } from '../services/routing';
 import { storage } from '../services/storage';
-import { Play, Pause, Square, Flame, Gauge, Zap, Map as MapIcon, CornerDownRight } from 'lucide-react';
+import { Play, Pause, Square, Flame, Gauge, Zap, Map as MapIcon } from 'lucide-react';
+import { Geolocation } from '@capacitor/geolocation';
 
 interface ActiveRunScreenProps {
   route: RouteOption;
@@ -32,32 +33,34 @@ export const ActiveRunScreen: React.FC<ActiveRunScreenProps> = ({
 }) => {
   const settings = storage.getSettings();
 
-  // Dynamic route state (can be updated when recalculating)
+  // Dynamic route state (recalculated if off-route)
   const [liveRoute, setLiveRoute] = useState<RouteOption>(initialRoute);
   const [recalculatingMsg, setRecalculatingMsg] = useState<string | null>(null);
   const isReroutingRef = useRef<boolean>(false);
   const offRouteCountRef = useRef<number>(0);
 
-  // Tracking state
+  // Tracking state — ALL START AT STRICT ZERO
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
   const [distanceKm, setDistanceKm] = useState<number>(0);
-  const [currentSpeedKmh, setCurrentSpeedKmh] = useState<number>(9.8);
-  const [maxSpeedKmh, setMaxSpeedKmh] = useState<number>(10.2);
-  const [currentPace, setCurrentPace] = useState<string>('6:07');
+  const [currentSpeedKmh, setCurrentSpeedKmh] = useState<number>(0.0);
+  const [maxSpeedKmh, setMaxSpeedKmh] = useState<number>(0.0);
+  const [currentPace, setCurrentPace] = useState<string>('--:--');
   const [calories, setCalories] = useState<number>(0);
   const [breadcrumbs, setBreadcrumbs] = useState<[number, number][]>([]);
+
+  // Current real runner GPS position
   const [currentRunnerPos, setCurrentRunnerPos] = useState<LatLng>({
     lat: initialRoute.coordinates[0]?.[0] || 36.8065,
     lng: initialRoute.coordinates[0]?.[1] || 10.1815,
   });
 
+  const lastPosRef = useRef<LatLng | null>(null);
+  const lastTimeRef = useRef<number>(Date.now());
+  const stationaryTimerRef = useRef<number>(0);
+
   // UI toggle for map
   const [showMap, setShowMap] = useState<boolean>(true);
-
-  // PC Test Simulation toggle
-  const [isSimulating, setIsSimulating] = useState<boolean>(true);
-  const simStepRef = useRef<number>(0);
 
   // Destination coordinates
   const destinationCoords: LatLng = {
@@ -69,10 +72,7 @@ export const ActiveRunScreen: React.FC<ActiveRunScreenProps> = ({
       currentRunnerPos.lng,
   };
 
-  // Watch position ID
-  const watchIdRef = useRef<number | null>(null);
-
-  // Helper to trigger reroute
+  // Trigger recalculation if runner takes wrong turn
   const triggerRecalculation = async (pos: LatLng, reason: string) => {
     if (isReroutingRef.current) return;
     isReroutingRef.current = true;
@@ -85,7 +85,6 @@ export const ActiveRunScreen: React.FC<ActiveRunScreenProps> = ({
         liveRoute
       );
       setLiveRoute(newRoute);
-      simStepRef.current = 0; // restart simulation on new route
       setTimeout(() => {
         setRecalculatingMsg('✓ Route updated ahead!');
         setTimeout(() => setRecalculatingMsg(null), 3000);
@@ -99,139 +98,177 @@ export const ActiveRunScreen: React.FC<ActiveRunScreenProps> = ({
     }
   };
 
-  // Timer loop
+  // Stopwatch timer (only counts elapsed duration)
   useEffect(() => {
     if (isPaused) return;
 
     const timer = setInterval(() => {
-      setElapsedSeconds(prev => {
-        const next = prev + 1;
+      setElapsedSeconds(prev => prev + 1);
 
-        if (isSimulating && liveRoute.coordinates.length > 0) {
-          const totalPoints = liveRoute.coordinates.length;
-          simStepRef.current = (simStepRef.current + 1) % totalPoints;
-          const targetCoord = liveRoute.coordinates[simStepRef.current];
-          const newPos = { lat: targetCoord[0], lng: targetCoord[1] };
-          setCurrentRunnerPos(newPos);
-
-          setBreadcrumbs(prevCoords => {
-            const updated = [...prevCoords, [newPos.lat, newPos.lng] as [number, number]];
-            return updated.slice(-300);
-          });
-
-          // Simulated speed variation
-          const simulatedSpeed = 9.4 + Math.sin(next * 0.18) * 2.5;
-          setCurrentSpeedKmh(Number(simulatedSpeed.toFixed(1)));
-          setMaxSpeedKmh(m => Math.max(m, simulatedSpeed));
-
-          const fraction = (next * (simulatedSpeed / 3600));
-          const currentDist = Math.min(fraction, liveRoute.distanceKm * 1.05);
-          setDistanceKm(Number(currentDist.toFixed(2)));
-
-          const paceSec = currentDist > 0.05 ? Math.round(next / currentDist) : 360;
-          setCurrentPace(formatPace(paceSec));
-
-          const cals = calculateCalories(settings.weightKg, simulatedSpeed, next);
-          setCalories(cals);
-        } else {
-          // Real GPS calorie and pace update
-          if (distanceKm > 0.05) {
-            const paceSec = Math.round(next / distanceKm);
-            setCurrentPace(formatPace(paceSec));
-            const avgSpeed = (distanceKm / (next / 3600));
-            setCalories(calculateCalories(settings.weightKg, avgSpeed, next));
-          }
-        }
-
-        return next;
-      });
+      // Check if user has been stationary (no GPS speed for > 4s)
+      stationaryTimerRef.current += 1;
+      if (stationaryTimerRef.current >= 4) {
+        // Reset current speed to 0.0 when not moving
+        setCurrentSpeedKmh(0.0);
+        setCurrentPace('--:--');
+      }
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [isPaused, isSimulating, liveRoute.coordinates, liveRoute.distanceKm, distanceKm, settings.weightKg]);
+  }, [isPaused]);
 
-  // Real GPS Geolocation tracking & Off-Track Detection
+  // Real GPS Location Engine (Capacitor Native or Web Geolocation)
   useEffect(() => {
-    if (isSimulating) return;
+    let watchId: string | number | null = null;
+    let isSubscribed = true;
 
-    if ('geolocation' in navigator) {
-      watchIdRef.current = navigator.geolocation.watchPosition(
-        pos => {
-          const newCoord: LatLng = {
-            lat: pos.coords.latitude,
-            lng: pos.coords.longitude,
-          };
+    const handleNewGpsPosition = (latitude: number, longitude: number, speedMps: number | null) => {
+      if (!isSubscribed || isPaused) return;
 
-          setCurrentRunnerPos(newCoord);
-          setBreadcrumbs(prev => [...prev, [newCoord.lat, newCoord.lng]]);
+      const newCoord: LatLng = { lat: latitude, lng: longitude };
+      setCurrentRunnerPos(newCoord);
 
-          // GPS speed
-          if (pos.coords.speed !== null && pos.coords.speed >= 0) {
-            const speedKmh = pos.coords.speed * 3.6;
-            setCurrentSpeedKmh(Number(speedKmh.toFixed(1)));
-            setMaxSpeedKmh(m => Math.max(m, speedKmh));
+      const now = Date.now();
+      const lastCoord = lastPosRef.current;
+      lastPosRef.current = newCoord;
+
+      if (!lastCoord) {
+        lastTimeRef.current = now;
+        return;
+      }
+
+      // Compute displacement in meters
+      const deltaMeters = calculateDistanceKm(lastCoord, newCoord) * 1000;
+      const timeDeltaSec = (now - lastTimeRef.current) / 1000;
+      lastTimeRef.current = now;
+
+      // Jitter filter: GPS satellites fluctuate by 2-4 meters even when standing still.
+      // Ignore movements < 4 meters if reported speed is essentially zero.
+      const hasRealMovement = deltaMeters >= 4.0 || (speedMps !== null && speedMps > 0.6);
+
+      if (hasRealMovement) {
+        stationaryTimerRef.current = 0;
+
+        // Calculate speed in km/h
+        let speedKmh = 0;
+        if (speedMps !== null && speedMps > 0.4) {
+          speedKmh = speedMps * 3.6;
+        } else if (timeDeltaSec > 0.5) {
+          speedKmh = (deltaMeters / timeDeltaSec) * 3.6;
+        }
+
+        // Filter out unreasonable GPS speed spikes (> 35 km/h for human running)
+        if (speedKmh <= 35) {
+          const cleanSpeed = Number(speedKmh.toFixed(1));
+          setCurrentSpeedKmh(cleanSpeed);
+          setMaxSpeedKmh(m => Math.max(m, cleanSpeed));
+        }
+
+        // Add real displacement to total distance
+        const deltaKm = deltaMeters / 1000;
+        setDistanceKm(prev => {
+          const updated = Number((prev + deltaKm).toFixed(3));
+
+          // Update current pace based on active running
+          if (updated > 0.03 && elapsedSeconds > 0) {
+            const paceSec = Math.round(elapsedSeconds / updated);
+            setCurrentPace(formatPace(paceSec));
           }
 
-          // Check deviation from planned route
-          const deviationMeters = getDistanceFromPolylineMeters(newCoord, liveRoute.coordinates);
-          if (deviationMeters > 50) {
-            offRouteCountRef.current += 1;
-            if (offRouteCountRef.current >= 3 && !isReroutingRef.current) {
-              triggerRecalculation(newCoord, `🔄 Off route (${Math.round(deviationMeters)}m): Recalculating...`);
-            }
-          } else {
-            offRouteCountRef.current = 0;
+          // Update calories based on real movement
+          const avgSpeed = (updated / (Math.max(1, elapsedSeconds) / 3600));
+          setCalories(calculateCalories(settings.weightKg, avgSpeed, elapsedSeconds));
+
+          return updated;
+        });
+
+        // Add to breadcrumb trail
+        setBreadcrumbs(prev => [...prev, [newCoord.lat, newCoord.lng]]);
+
+        // Check if runner deviated off-track
+        const deviationMeters = getDistanceFromPolylineMeters(newCoord, liveRoute.coordinates);
+        if (deviationMeters > 50) {
+          offRouteCountRef.current += 1;
+          if (offRouteCountRef.current >= 3 && !isReroutingRef.current) {
+            triggerRecalculation(newCoord, `🔄 Off route (${Math.round(deviationMeters)}m): Recalculating...`);
           }
-
-          // Accumulate distance
-          setBreadcrumbs(coords => {
-            if (coords.length > 1) {
-              const last = coords[coords.length - 2];
-              const delta = calculateDistanceKm(
-                { lat: last[0], lng: last[1] },
-                newCoord
-              );
-              setDistanceKm(d => Number((d + delta).toFixed(2)));
-            }
-            return coords;
-          });
-        },
-        err => console.warn('GPS location error:', err),
-        { enableHighAccuracy: true, maximumAge: 1000 }
-      );
-    }
-
-    return () => {
-      if (watchIdRef.current !== null) {
-        navigator.geolocation.clearWatch(watchIdRef.current);
+        } else {
+          offRouteCountRef.current = 0;
+        }
       }
     };
-  }, [isSimulating, liveRoute]);
 
-  // Manual detour simulator trigger for PC testing
-  const handleSimulateDetour = () => {
-    const deviatedPos: LatLng = {
-      lat: currentRunnerPos.lat + 0.0035, // ~380 meters off-track
-      lng: currentRunnerPos.lng + 0.0035,
+    // Start watching position
+    const startTracking = async () => {
+      try {
+        // Attempt Capacitor native GPS first (works on Android APK)
+        watchId = await Geolocation.watchPosition(
+          { enableHighAccuracy: true, timeout: 5000, maximumAge: 1000 },
+          (position, err) => {
+            if (err) {
+              console.warn('Capacitor geolocation watch error:', err);
+              return;
+            }
+            if (position?.coords) {
+              handleNewGpsPosition(
+                position.coords.latitude,
+                position.coords.longitude,
+                position.coords.speed
+              );
+            }
+          }
+        );
+      } catch {
+        // Fallback to browser navigator.geolocation
+        if ('geolocation' in navigator) {
+          watchId = navigator.geolocation.watchPosition(
+            pos => {
+              handleNewGpsPosition(
+                pos.coords.latitude,
+                pos.coords.longitude,
+                pos.coords.speed
+              );
+            },
+            err => console.warn('Browser GPS error:', err),
+            { enableHighAccuracy: true, maximumAge: 1000, timeout: 5000 }
+          );
+        }
+      }
     };
-    setCurrentRunnerPos(deviatedPos);
-    triggerRecalculation(deviatedPos, '🔄 Took unexpected turn: Recalculating new route...');
-  };
+
+    startTracking();
+
+    return () => {
+      isSubscribed = false;
+      if (typeof watchId === 'string') {
+        Geolocation.clearWatch({ id: watchId }).catch(() => {});
+      } else if (typeof watchId === 'number' && 'geolocation' in navigator) {
+        navigator.geolocation.clearWatch(watchId);
+      }
+    };
+  }, [isPaused, liveRoute, elapsedSeconds, settings.weightKg]);
 
   const handleFinish = () => {
+    // Record only ACTUAL real movement
+    const finalDistanceKm = Number(distanceKm.toFixed(2));
+    const avgSpeedKmh =
+      elapsedSeconds > 0 && finalDistanceKm > 0.02
+        ? Number(((finalDistanceKm / (elapsedSeconds / 3600))).toFixed(1))
+        : 0;
+
     const rawState: TrackingState = {
       isActive: false,
       isPaused: true,
       startTime: Date.now() - elapsedSeconds * 1000,
       elapsedSeconds,
       currentCoords: currentRunnerPos,
-      gpsBreadcrumbs: breadcrumbs.length > 0 ? breadcrumbs : liveRoute.coordinates,
-      currentSpeedKmh,
+      gpsBreadcrumbs: breadcrumbs,
+      currentSpeedKmh: 0,
       maxSpeedKmh,
-      avgSpeedKmh: elapsedSeconds > 0 ? (distanceKm / (elapsedSeconds / 3600)) : 0,
-      currentPace,
-      totalDistanceKm: distanceKm > 0 ? distanceKm : liveRoute.distanceKm,
-      caloriesBurned: calories > 0 ? calories : Math.round(liveRoute.distanceKm * 65),
+      avgSpeedKmh,
+      currentPace: finalDistanceKm > 0.05 ? currentPace : '--:--',
+      totalDistanceKm: finalDistanceKm,
+      caloriesBurned: calories,
     };
 
     const session = finalizeRunSession(rawState, liveRoute.distanceKm, startName, endName);
@@ -245,44 +282,19 @@ export const ActiveRunScreen: React.FC<ActiveRunScreenProps> = ({
       {/* Top Status Bar */}
       <div className="px-4 py-2.5 bg-slate-900 border-b border-slate-800 flex items-center justify-between text-xs">
         <div className="flex items-center gap-2">
-          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+          <span className={`w-2.5 h-2.5 rounded-full ${isPaused ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'}`} />
           <span className="font-bold tracking-wide uppercase text-slate-300">
-            {isPaused ? 'Run Paused' : 'Live Tracking'}
+            {isPaused ? 'Run Paused' : 'Live GPS Tracking'}
           </span>
         </div>
 
-        <div className="flex items-center gap-2">
-          {/* Detour test button for PC */}
-          {isSimulating && (
-            <button
-              onClick={handleSimulateDetour}
-              className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-950 hover:bg-amber-900 text-amber-300 border border-amber-700 flex items-center gap-1"
-              title="Test off-track dynamic recalculation"
-            >
-              <CornerDownRight className="w-3 h-3" />
-              <span>Simulate Detour</span>
-            </button>
-          )}
-
-          <button
-            onClick={() => setIsSimulating(!isSimulating)}
-            className={`px-2 py-0.5 rounded text-[11px] font-bold border transition ${
-              isSimulating
-                ? 'bg-sky-950 text-sky-400 border-sky-600'
-                : 'bg-slate-800 text-slate-400 border-slate-700'
-            }`}
-          >
-            {isSimulating ? '🖥️ PC Mode' : '📍 GPS'}
-          </button>
-
-          <button
-            onClick={() => setShowMap(!showMap)}
-            className="p-1.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white"
-            title="Toggle Map"
-          >
-            <MapIcon className="w-4 h-4" />
-          </button>
-        </div>
+        <button
+          onClick={() => setShowMap(!showMap)}
+          className="p-1.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white"
+          title="Toggle Map"
+        >
+          <MapIcon className="w-4 h-4" />
+        </button>
       </div>
 
       {/* Dynamic Recalculating Notification Banner */}
@@ -308,7 +320,7 @@ export const ActiveRunScreen: React.FC<ActiveRunScreenProps> = ({
         <div className="bg-slate-900/90 rounded-2xl p-4 border border-slate-800 shadow-xl">
           <div className="flex items-baseline justify-between">
             <span className="text-xs font-bold uppercase text-slate-400 tracking-wider">
-              Distance
+              Distance Ran
             </span>
             <span className="text-xs font-semibold text-slate-400">
               Target: {liveRoute.distanceKm.toFixed(1)} km
@@ -368,7 +380,7 @@ export const ActiveRunScreen: React.FC<ActiveRunScreenProps> = ({
               </div>
             </div>
             <div className="text-right text-[11px] text-slate-400">
-              <span className="text-emerald-400 font-bold">{progressPercent}%</span> completed
+              <span className="text-emerald-400 font-bold">{progressPercent}%</span> of target
             </div>
           </div>
         </div>
