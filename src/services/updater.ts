@@ -1,3 +1,5 @@
+import { registerPlugin, Capacitor } from '@capacitor/core';
+
 export interface UpdateInfo {
   hasUpdate: boolean;
   currentVersion: string;
@@ -10,16 +12,26 @@ export interface UpdateInfo {
 
 export const APP_VERSION = '1.0.0';
 
+interface NativeAppUpdatePlugin {
+  downloadAndInstallApk(options: { url: string }): Promise<void>;
+  addListener(
+    eventName: 'downloadProgress',
+    listenerFunc: (info: { progress: number; receivedBytes: number; totalBytes: number }) => void
+  ): Promise<any>;
+}
+
+const NativeAppUpdate = registerPlugin<NativeAppUpdatePlugin>('AppUpdate');
+
 /**
  * Checks GitHub Releases for a newer version
  */
-export async function checkForAppUpdates(repoFullName: string): Promise<UpdateInfo> {
+export async function checkForAppUpdates(repoFullName: string = 'DALI951/looprunner'): Promise<UpdateInfo> {
   if (!repoFullName || !repoFullName.includes('/')) {
     return {
       hasUpdate: false,
       currentVersion: APP_VERSION,
       latestVersion: APP_VERSION,
-      error: 'Please specify your GitHub repository (e.g. username/looprunner) to check releases.',
+      error: 'Please specify your GitHub repository (e.g. username/looprunner).',
     };
   }
 
@@ -30,7 +42,7 @@ export async function checkForAppUpdates(repoFullName: string): Promise<UpdateIn
       headers: {
         Accept: 'application/vnd.github.v3+json',
       },
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(6000),
     });
 
     if (!res.ok) {
@@ -39,14 +51,14 @@ export async function checkForAppUpdates(repoFullName: string): Promise<UpdateIn
           hasUpdate: false,
           currentVersion: APP_VERSION,
           latestVersion: APP_VERSION,
-          error: 'No releases found on GitHub yet. Push to main to generate the first release APK!',
+          error: 'No releases found on GitHub yet.',
         };
       }
       return {
         hasUpdate: false,
         currentVersion: APP_VERSION,
         latestVersion: APP_VERSION,
-        error: `GitHub API error: ${res.statusText}`,
+        error: `GitHub error: ${res.statusText}`,
       };
     }
 
@@ -55,8 +67,7 @@ export async function checkForAppUpdates(repoFullName: string): Promise<UpdateIn
     const cleanLatest = latestTag.replace(/^v/, '');
     const cleanCurrent = APP_VERSION.replace(/^v/, '');
 
-    // Look for apk in release assets
-    let apkUrl = release.html_url;
+    let apkUrl = '';
     if (release.assets && Array.isArray(release.assets)) {
       const apkAsset = release.assets.find((a: { name: string; browser_download_url: string }) =>
         a.name.toLowerCase().endsWith('.apk')
@@ -66,12 +77,12 @@ export async function checkForAppUpdates(repoFullName: string): Promise<UpdateIn
       }
     }
 
-    const hasUpdate = isNewerVersion(cleanLatest, cleanCurrent);
+    const hasUpdate = isNewerVersion(cleanLatest, cleanCurrent) || (latestTag && latestTag !== `v${APP_VERSION}`);
 
     return {
       hasUpdate,
       currentVersion: APP_VERSION,
-      latestVersion: latestTag,
+      latestVersion: latestTag || `v${APP_VERSION}`,
       releaseNotes: release.body || 'New enhancements and stability improvements.',
       apkDownloadUrl: apkUrl,
       publishedAt: release.published_at,
@@ -81,8 +92,71 @@ export async function checkForAppUpdates(repoFullName: string): Promise<UpdateIn
       hasUpdate: false,
       currentVersion: APP_VERSION,
       latestVersion: APP_VERSION,
-      error: (err as Error).message || 'Unable to check for updates while offline.',
+      error: (err as Error).message || 'Unable to check updates while offline.',
     };
+  }
+}
+
+/**
+ * In-App Download and Install Handler (Like PinPulse):
+ * Downloads the APK directly inside the app with live progress, then triggers the installer.
+ */
+export async function downloadAndInstallInApp(
+  apkUrl: string,
+  onProgress: (percent: number, receivedBytes: number, totalBytes: number) => void
+): Promise<void> {
+  if (!apkUrl) throw new Error('No APK download URL provided.');
+
+  if (Capacitor.isNativePlatform()) {
+    // Native Android execution via AppUpdatePlugin
+    const handle = await NativeAppUpdate.addListener('downloadProgress', data => {
+      const percent = Math.min(100, Math.round(data.progress * 100));
+      onProgress(percent, data.receivedBytes, data.totalBytes);
+    });
+
+    try {
+      await NativeAppUpdate.downloadAndInstallApk({ url: apkUrl });
+    } finally {
+      if (handle && handle.remove) {
+        handle.remove();
+      }
+    }
+  } else {
+    // Web / Desktop fallback: stream download with progress
+    const response = await fetch(apkUrl);
+    if (!response.ok) throw new Error(`Download failed with status ${response.status}`);
+
+    const contentLength = Number(response.headers.get('content-length')) || 25000000;
+    const reader = response.body?.getReader();
+
+    if (!reader) {
+      window.location.href = apkUrl;
+      return;
+    }
+
+    let received = 0;
+    const chunks: any[] = [];
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        chunks.push(value);
+        received += value.length;
+        const percent = Math.min(100, Math.round((received / contentLength) * 100));
+        onProgress(percent, received, contentLength);
+      }
+    }
+
+    const blob = new Blob(chunks, { type: 'application/vnd.android.package-archive' });
+    const downloadUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = 'LoopRunner.apk';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(downloadUrl);
   }
 }
 
