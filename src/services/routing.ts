@@ -30,13 +30,13 @@ export interface FeasibilityResult {
 }
 
 /**
- * Check if the target distance is physically possible between start and end
+ * Instant local feasibility check (zero network delay)
  */
-export async function checkFeasibility(
+export function checkFeasibility(
   start: LatLng,
   end: LatLng,
   targetKm: number
-): Promise<FeasibilityResult> {
+): FeasibilityResult {
   const straightLine = calculateDistanceKm(start, end);
 
   // If Start == End, any distance >= 0.5km is feasible for a loop
@@ -51,22 +51,8 @@ export async function checkFeasibility(
     return { isFeasible: true, minDistanceKm: 0.5 };
   }
 
-  // Estimated pedestrian shortest path
-  let estimatedMinRoad = straightLine * 1.15;
-
-  try {
-    const url = `https://router.project-osrm.org/route/v1/foot/${start.lng},${start.lat};${end.lng},${end.lat}?overview=false`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(3500) });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.routes && data.routes.length > 0) {
-        estimatedMinRoad = data.routes[0].distance / 1000;
-      }
-    }
-  } catch {
-    // fallback to conservative geometric estimate
-  }
-
+  // Realistic pedestrian shortest path requires ~1.2x straight line due to road grids
+  const estimatedMinRoad = straightLine * 1.20;
   const roundedMin = Math.ceil(estimatedMinRoad * 10) / 10;
 
   if (targetKm < estimatedMinRoad * 0.95) {
@@ -228,7 +214,7 @@ export async function generateCustomRoute(
     const coordsParam = allStops.map(p => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`).join(';');
     const url = `https://router.project-osrm.org/route/v1/foot/${coordsParam}?overview=full&geometries=geojson&continue_straight=true`;
 
-    const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    const res = await fetch(url, { signal: AbortSignal.timeout(2200) });
     if (res.ok) {
       const data = await res.json();
       if (data.routes && data.routes.length > 0) {

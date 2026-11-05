@@ -87,19 +87,10 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
   const startCoords = getStartCoords();
   const endCoords = getEndCoords();
 
-  // Validate feasibility when points or target change
+  // Instant local validation when points or target change
   useEffect(() => {
-    let isCancelled = false;
-    const validate = async () => {
-      const res = await checkFeasibility(startCoords, endCoords, targetKm);
-      if (!isCancelled) {
-        setFeasibility(res);
-      }
-    };
-    validate();
-    return () => {
-      isCancelled = true;
-    };
+    const res = checkFeasibility(startCoords, endCoords, targetKm);
+    setFeasibility(res);
   }, [startCoords.lat, startCoords.lng, endCoords.lat, endCoords.lng, targetKm, isLoop]);
 
   const handleMapClick = (coords: LatLng) => {

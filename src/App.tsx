@@ -16,7 +16,11 @@ export function App() {
   const [currentScreen, setCurrentScreen] = useState<Screen>('plan');
   const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([]);
   const [runs, setRuns] = useState<RunSession[]>([]);
-  const [userCoords, setUserCoords] = useState<LatLng | null>(null);
+  const [userCoords, setUserCoords] = useState<LatLng | null>(() => {
+    const places = storage.getSavedPlaces();
+    const defaultStart = places.find(p => p.isDefaultStart) || places[0];
+    return defaultStart ? defaultStart.coords : { lat: 36.8065, lng: 10.1815 };
+  });
 
   // Active generation / session states
   const [activeRoute, setActiveRoute] = useState<RouteOption | null>(null);
