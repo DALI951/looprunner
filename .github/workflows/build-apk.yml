@@ -1,0 +1,82 @@
+name: Build & Release Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build Web Application
+        run: npm run build
+
+      - name: Sync Capacitor Android
+        run: npx cap sync android
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Build Android APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --stacktrace
+
+      - name: Prepare APK Asset
+        run: |
+          mkdir -p release-artifacts
+          cp android/app/build/outputs/apk/debug/app-debug.apk release-artifacts/LoopRunner-v${{ github.run_number }}.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk release-artifacts/LoopRunner-latest.apk
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: LoopRunner v1.0.${{ github.run_number }}
+          body: |
+            ## LoopRunner Automated Release 🏃💨
+            
+            - **Commit**: ${{ github.sha }}
+            - **Build**: #${{ github.run_number }}
+            - **Includes**:
+              - Leaflet OpenStreetMap local-first routing
+              - Target distance & loop generator (anti-backtrack)
+              - Saved places manager
+              - Live stats HUD (distance, duration, pace, max speed, calories)
+              - History & progress charts
+              - In-app update checker
+              
+            ### Download:
+            Download and install **`LoopRunner-v${{ github.run_number }}.apk`** directly on your Android device.
+          files: |
+            release-artifacts/LoopRunner-v${{ github.run_number }}.apk
+            release-artifacts/LoopRunner-latest.apk
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

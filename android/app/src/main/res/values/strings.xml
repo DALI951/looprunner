@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">LoopRunner</string>
+    <string name="title_activity_main">LoopRunner</string>
+    <string name="package_name">com.looprunner.app</string>
+    <string name="custom_url_scheme">com.looprunner.app</string>
+</resources>
