@@ -6,11 +6,17 @@ import { ActiveRunScreen } from './components/ActiveRunScreen';
 import { SummaryScreen } from './components/SummaryScreen';
 import { HistoryScreen } from './components/HistoryScreen';
 import { SavedPlacesScreen } from './components/SavedPlacesScreen';
+import { SettingsScreen } from './components/SettingsScreen';
 import { UpdateModal } from './components/UpdateModal';
-import { Compass, TrendingUp, Bookmark } from 'lucide-react';
+import {
+  Compass,
+  TrendingUp,
+  Bookmark,
+  SlidersHorizontal,
+} from 'lucide-react';
 import { Capacitor } from '@capacitor/core';
 
-type Screen = 'plan' | 'run' | 'summary' | 'history' | 'places';
+type Screen = 'plan' | 'run' | 'summary' | 'history' | 'places' | 'settings';
 
 export function App() {
   const [currentScreen, setCurrentScreen] = useState<Screen>('plan');
@@ -104,6 +110,13 @@ export function App() {
     setRuns(storage.getRuns());
   };
 
+  const handleDataCleared = () => {
+    setSavedPlaces(storage.getSavedPlaces());
+    setRuns(storage.getRuns());
+    setCompletedSession(null);
+    setActiveRoute(null);
+  };
+
   const personalRecords = storage.getPersonalRecords();
 
   const renderScreen = () => {
@@ -169,6 +182,15 @@ export function App() {
           />
         );
 
+      case 'settings':
+        return (
+          <SettingsScreen
+            onBackToPlan={() => setCurrentScreen('plan')}
+            onOpenUpdates={() => setIsUpdateOpen(true)}
+            onDataCleared={handleDataCleared}
+          />
+        );
+
       default:
         return null;
     }
@@ -223,6 +245,18 @@ export function App() {
             >
               <TrendingUp className="w-5 h-5" />
               <span className="text-[10px]">Progress</span>
+            </button>
+
+            <button
+              onClick={() => setCurrentScreen('settings')}
+              className={`flex flex-col items-center gap-1 transition ${
+                currentScreen === 'settings'
+                  ? 'text-sky-400 font-bold'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <SlidersHorizontal className="w-5 h-5" />
+              <span className="text-[10px]">Settings</span>
             </button>
           </nav>
         )}

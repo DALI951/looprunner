@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { RunSession, PersonalRecords } from '../types';
 import { formatDuration } from '../services/tracking';
+import { runToGpx, saveGpx } from '../services/gpx';
 import {
   Trophy,
   TrendingUp,
@@ -361,6 +362,23 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
                             {run.calories}
                           </td>
                           <td className="p-3 text-right whitespace-nowrap">
+                            <button
+                              onClick={() => {
+                                const stamp = new Date(run.date)
+                                  .toISOString()
+                                  .slice(0, 10);
+                                saveGpx(
+                                  `looprunner-${stamp}-${run.distanceKm.toFixed(
+                                    2
+                                  )}km.gpx`,
+                                  runToGpx(run)
+                                );
+                              }}
+                              className="text-slate-500 hover:text-sky-400 p-1 rounded transition"
+                              title="Export this run as GPX"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                            </button>
                             <button
                               onClick={() => onDeleteRun(run.id)}
                               className="text-slate-500 hover:text-rose-400 p-1 rounded transition"
